@@ -1,3 +1,5 @@
 # Pure Julia implementation of the QDLDL solver algorithm
 
-File `QDLDL.jl` contains a pure julia implementation of the algorithm that might be useful for testing or prototyping purposes.
+Provides a pure julia implementation of the QDLDL solver that might be useful for testing or prototyping purposes.
+
+This is a pure julia implementation of the C language QDLDL solver (https://github.com/oxfordcontrol/qdldl)
