@@ -1,6 +1,6 @@
 module QDLDL
 
-export qdldl, \, solve, solve!, update_diagonal!
+export qdldl, \, solve, solve!, update_diagonal!, positive_inertia
 
 using AMD, SparseArrays
 using LinearAlgebra: triu, Diagonal
@@ -20,7 +20,7 @@ struct QDLDLWorkspace{Tf<:AbstractFloat,Ti<:Integer}
     fwork::Vector{Tf}
 
     #L matrix row indices and data
-    Ln::Ti
+    Ln::Int         #always Int since SparseMatrixCSC does it this way
     Lp::Vector{Ti}
     Li::Vector{Ti}
     Lx::Vector{Tf}
@@ -123,18 +123,30 @@ function qdldl(A::SparseMatrixCSC{Tv,Ti};
 
 end
 
+function positive_inertia(F::QDLDLFactorisation)
+    F.workspace.positive_inertia[]
+end
+
+
+function update_diagonal!(F::QDLDLFactorisation,indices,scalarValue::Real)
+    update_diagonal!(F,indices,[scalarValue])
+end
+
+
 function update_diagonal!(F::QDLDLFactorisation,indices,values)
 
-    length(values) != length(indices) && throw(DimensionMismatch("Index and value arrays must be the same size."))
+    (length(values) != length(indices) && length(values) != 1 ) &&
+        throw(DimensionMismatch("Index and value arrays must be the same size, or values must be a scalar."))
 
     triuA = F.workspace.triuA
     invp  = F.iperm
+    nvals = length(values)
 
     #triuA is full rank and  upper triangular, so the diagonal element
     #in each column will always be the last nonzero
     for i in 1:length(indices)
          idx = invp[indices[i]]
-         val =  values[i]
+         val = nvals == 1 ? values[1] : values[i]
          triuA.nzval[triuA.colptr[idx+1]-1] = val
     end
 
@@ -149,7 +161,7 @@ function Base.:\(F::QDLDLFactorisation,b)
 end
 
 
-function refactor!(F::QDLDLFactorisation) 
+function refactor!(F::QDLDLFactorisation)
     factor!(F.workspace,F.logical)
 end
 
