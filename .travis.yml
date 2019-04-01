@@ -16,3 +16,7 @@ matrix:
 
 script:
    - julia -e 'if VERSION >= v"0.7.0-" using Pkg; end; Pkg.clone(pwd()); Pkg.build("QDLDL"); Pkg.test("QDLDL"; coverage=true)';
+
+after_success:
+  # push coverage results to Codecov
+  - julia -e 'if VERSION >= v"0.7.0-" using Pkg; end; cd(Pkg.dir("QDLDL")); Pkg.add("Coverage"); using Coverage; Codecov.submit(Codecov.process_folder())'
