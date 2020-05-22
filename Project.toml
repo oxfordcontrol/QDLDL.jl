@@ -1,0 +1,12 @@
+name = "QDLDL"
+uuid = "bfc457fd-c171-5ab7-bd9e-d5dbfc242d63"
+authors = ["Paul Goulart <paul.goulart@eng.ox.ac.uk>"]
+version = "0.1.3"
+
+[deps]
+AMD = "14f7f29c-3bd6-536c-9a0b-7339e30b5a3e"
+SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+
+[compat]
+julia = "^1"
