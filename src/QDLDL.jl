@@ -102,8 +102,19 @@ function qdldl(A::SparseMatrixCSC{Tv,Ti};
                logical::Bool=false
               ) where {Tv<:AbstractFloat,Ti<:Integer}
 
-    #allocate workspacefor factorisation
-    workspace = perm == nothing ? QDLDLWorkspace(triu(A)) : QDLDLWorkspace(triu(A[perm,perm]))
+    #allocate workspace for factorisation
+    A = triu(A);
+
+    #store the inverse permutation to enable matrix updates
+    iperm = perm == nothing ? nothing : invperm(perm)
+
+    #permute using symperm
+    if perm != nothing
+        A = _symperm(A,iperm)
+    end
+
+    #allocate workspace
+    workspace = QDLDLWorkspace(triu(A))
 
     #factor the matrix
     factor!(workspace,logical)
@@ -115,9 +126,6 @@ function qdldl(A::SparseMatrixCSC{Tv,Ti};
                         workspace.Li,
                         workspace.Lx)
     Dinv = Diagonal(workspace.Dinv)
-
-    #store the inverse permutation to enable matrix updates
-    iperm = perm == nothing ? nothing : invperm(perm)
 
     return QDLDLFactorisation(perm, iperm, L, Dinv, workspace, logical)
 
@@ -489,6 +497,48 @@ function ipermute!(x,b,p)
      x[p[j]] = b[j];
  end
  return x
+end
+
+
+function _symperm(A::SparseMatrixCSC{Tv,Ti}, pinv::Vector{Ti}) where {Tv<:AbstractFloat,Ti<:Integer}
+    m, n = size(A)
+    if m != n
+        throw(DimensionMismatch("sparse matrix A must be square"))
+    end
+    Ap = A.colptr
+    Ai = A.rowval
+    Ax = A.nzval
+    if !isperm(pinv)
+        throw(ArgumentError("pinv must be a permutation"))
+    end
+    lpinv = length(pinv)
+    if n != lpinv
+        throw(DimensionMismatch(
+            "dimensions of sparse matrix A must equal the length of pinv, $((m,n)) != $lpinv"))
+    end
+    C = copy(A); Cp = C.colptr; Ci = C.rowval; Cx = C.nzval
+    w = zeros(Ti,n)
+    for j in 1:n  # count entries in each column of C
+        j2 = pinv[j]
+        for p in Ap[j]:(Ap[j+1]-1)
+            (i = Ai[p]) > j || (w[max(pinv[i],j2)] += one(Ti))
+        end
+    end
+    Cp[:] = cumsum(vcat(one(Ti),w))
+    copy!(w,Cp[1:n]) # needed to be consistent with cs_cumsum
+    for j in 1:n
+        j2 = pinv[j]
+        for p = Ap[j]:(Ap[j+1]-1)
+            (i = Ai[p]) > j && continue
+            i2 = pinv[i]
+            ind = max(i2,j2)
+            q = w[ind]
+            Ci[q] = min(i2,j2)
+            w[ind] += 1
+            Cx[q] = Ax[p]
+        end
+    end
+    (C')' # double transpose to order the columns
 end
 
 
