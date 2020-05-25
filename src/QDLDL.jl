@@ -3,7 +3,7 @@ module QDLDL
 export qdldl, \, solve, solve!, update_diagonal!, positive_inertia
 
 using AMD, SparseArrays
-using LinearAlgebra: triu, Diagonal
+using LinearAlgebra: istriu, triu, Diagonal
 
 const QDLDL_UNKNOWN = -1;
 const QDLDL_USED   = true;
@@ -102,15 +102,16 @@ function qdldl(A::SparseMatrixCSC{Tv,Ti};
                logical::Bool=false
               ) where {Tv<:AbstractFloat,Ti<:Integer}
 
-    #allocate workspace for factorisation
-    A = triu(A);
-
     #store the inverse permutation to enable matrix updates
     iperm = perm == nothing ? nothing : invperm(perm)
 
-    #permute using symperm
+    #permute using symperm, returning a triu matrix to factor
     if perm != nothing
-        A = _symperm(A,iperm)
+        A = _symperm(A,iperm)  #returns an upper triangular matrix
+    else
+        if(!istriu(A))
+            A = triu(A);
+        end
     end
 
     #allocate workspace
