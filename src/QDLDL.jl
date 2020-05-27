@@ -105,7 +105,7 @@ function qdldl(A::SparseMatrixCSC{Tv,Ti};
     #store the inverse permutation to enable matrix updates
     iperm = perm == nothing ? nothing : invperm(perm)
 
-    #permute using symperm, returning a triu matrix to factor
+    #permute using symperm, producing a triu matrix to factor
     if perm != nothing
         A = _symperm(A,iperm)  #returns an upper triangular matrix
     else
@@ -115,7 +115,7 @@ function qdldl(A::SparseMatrixCSC{Tv,Ti};
     end
 
     #allocate workspace
-    workspace = QDLDLWorkspace(triu(A))
+    workspace = QDLDLWorkspace(A)
 
     #factor the matrix
     factor!(workspace,logical)
