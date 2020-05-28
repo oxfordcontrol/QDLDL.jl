@@ -525,7 +525,13 @@ function _symperm(A::SparseMatrixCSC{Tv,Ti}, pinv::Vector{Ti}) where {Tv<:Abstra
             (i = Ai[p]) > j || (w[max(pinv[i],j2)] += one(Ti))
         end
     end
-    Cp[:] = cumsum(vcat(one(Ti),w))
+
+    #Cp[:] = cumsum(vcat(one(Ti),w))
+    Cp[1] = 1
+    for i = eachindex(w)
+        Cp[i+1] = Cp[i] + w[i]
+    end
+
     copy!(w,Cp[1:n]) # needed to be consistent with cs_cumsum
     for j in 1:n
         j2 = pinv[j]
