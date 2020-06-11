@@ -98,16 +98,16 @@ end
 # qdldl(A,logical=true) produces a logical factorisation only
 
 function qdldl(A::SparseMatrixCSC{Tv,Ti};
-               perm::Union{Array{Ti,1},Nothing}=amd(A),
+               perm::Union{Array{Ti},Nothing}=amd(A),
                logical::Bool=false
-              ) where {Tv<:AbstractFloat,Ti<:Integer}
+              ) where {Tv<:AbstractFloat, Ti<:Integer}
 
     #store the inverse permutation to enable matrix updates
     iperm = perm == nothing ? nothing : invperm(perm)
 
     #permute using symperm, producing a triu matrix to factor
     if perm != nothing
-        A = _symperm(A,iperm)  #returns an upper triangular matrix
+        A = permute_symmetric(A, iperm)  #returns an upper triangular matrix
     else
         if(!istriu(A))
             A = triu(A);
@@ -501,51 +501,83 @@ function ipermute!(x,b,p)
 end
 
 
-function _symperm(A::SparseMatrixCSC{Tv,Ti}, pinv::Vector{Ti}) where {Tv<:AbstractFloat,Ti<:Integer}
+"Given a sparse symmetric matrix `A` (with only upper triangular entries), return permuted sparse symmetric matrix `P` (only upper triangular) given the inverse permutation vector `iperm`."
+function permute_symmetric(A::SparseMatrixCSC{Tv, Ti}, iperm::AbstractVector{Ti}, Pr::AbstractVector{Ti} = zeros(Ti, nnz(A)), Pc::AbstractVector{Ti} = zeros(Ti, size(A, 1) + 1), Pv::AbstractVector{Tv} = zeros(Tv, nnz(A)) ) where {Tv <: AbstractFloat, Ti <: Integer}
+
+    # perform a number of argument checks
     m, n = size(A)
-    if m != n
-        throw(DimensionMismatch("sparse matrix A must be square"))
+    m != n && throw(DimensionMismatch("Matrix A must be sparse and square"))
+
+    isperm(iperm) || throw(ArgumentError("pinv must be a permutation"))
+
+    if n != length(iperm)
+        throw(DimensionMismatch("Dimensions of sparse matrix A must equal the length of iperm, $((m,n)) != $(iperm)"))
     end
-    Ap = A.colptr
-    Ai = A.rowval
-    Ax = A.nzval
-    if !isperm(pinv)
-        throw(ArgumentError("pinv must be a permutation"))
-    end
-    lpinv = length(pinv)
-    if n != lpinv
-        throw(DimensionMismatch(
-            "dimensions of sparse matrix A must equal the length of pinv, $((m,n)) != $lpinv"))
-    end
-    C = copy(A); Cp = C.colptr; Ci = C.rowval; Cx = C.nzval
-    w = zeros(Ti,n)
-    for j in 1:n  # count entries in each column of C
-        j2 = pinv[j]
-        for p in Ap[j]:(Ap[j+1]-1)
-            (i = Ai[p]) > j || (w[max(pinv[i],j2)] += one(Ti))
+    return _permute_symmetric(A, iperm, Pr, Pc, Pv)
+end
+
+# the main function without extra argument checks
+# following the book: Timothy Davis - Direct Methods for Sparse Linear Systems
+function _permute_symmetric(A::SparseMatrixCSC{Tv, Ti}, iperm::AbstractVector{Ti}, Pr::AbstractVector{Ti}, Pc::AbstractVector{Ti}, Pv::AbstractVector{Tv}) where {Tv <: AbstractFloat, Ti <: Integer}
+    # 1. count number of entries that each column of P will have
+    n = size(A, 2)
+    num_entries = zeros(Ti, n)
+    Ar = A.rowval
+    Ac = A.colptr
+    Av = A.nzval
+    # count the number of upper-triangle entries in columns of P, keeping in mind the row permutation
+    for colA = 1:n
+        colP = iperm[colA]
+        # loop over entries of A in column A...
+        for row_idx = Ac[colA]:Ac[colA+1]-1
+            rowA = Ar[row_idx]
+            rowP = iperm[rowA]
+            # ...and check if entry is upper triangular
+            if rowA <= colA
+                # determine to which column the entry belongs after permutation
+                col_idx = max(rowP, colP)
+                num_entries[col_idx] += one(Ti)
+            end
         end
     end
+    # 2. calculate permuted Pc = P.colptr from number of entries
+    Pc[1] = one(Ti)
+    @inbounds for k = 1:n
+        Pc[k + 1] = Pc[k] + num_entries[k]
 
-    #Cp[:] = cumsum(vcat(one(Ti),w))
-    Cp[1] = 1
-    for i = eachindex(w)
-        Cp[i+1] = Cp[i] + w[i]
+        # reuse this vector memory to keep track of free entries in rowval
+        num_entries[k] = Pc[k]
     end
+    # use alias
+    row_starts = num_entries
 
-    copy!(w,Cp[1:n]) # needed to be consistent with cs_cumsum
-    for j in 1:n
-        j2 = pinv[j]
-        for p = Ap[j]:(Ap[j+1]-1)
-            (i = Ai[p]) > j && continue
-            i2 = pinv[i]
-            ind = max(i2,j2)
-            q = w[ind]
-            Ci[q] = min(i2,j2)
-            w[ind] += 1
-            Cx[q] = Ax[p]
+    # 3. permute the row entries and position of corresponding nzval
+    for colA = 1:n
+        colP = iperm[colA]
+        # loop over rows of A and determine where each row entry of A should be stored
+        for rowA_idx = Ac[colA]:Ac[colA+1]-1
+            rowA = Ar[rowA_idx]
+            # check if upper triangular
+            if rowA <= colA
+                rowP = iperm[rowA]
+                # determine column to store the entry
+                col_idx = max(colP, rowP)
+
+                # find next free location in rowval (this results in unordered columns in the rowval)
+                rowP_idx = row_starts[col_idx]
+
+                # store rowval and nzval
+                Pr[rowP_idx] = min(colP, rowP)
+                Pv[rowP_idx] = Av[rowA_idx]
+
+                # increment next free location
+                row_starts[col_idx] += 1
+            end
         end
     end
-    (C')' # double transpose to order the columns
+    P = SparseMatrixCSC{Tv, Ti}(n, n, Pc, Pr, Pv)
+    # order row indices within P.rowcal[P.colptr[k]:P.colptr[k+1]-1]
+    return (P')'
 end
 
 
