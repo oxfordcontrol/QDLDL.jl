@@ -9,6 +9,17 @@ function random_psd(n)
 
 end
 
+function build_kkt(Q,G)
+  n = size(Q,1)
+  m = size(G,1)
+
+  A = [Q G';G zeros(m,m)] + 1e-2*Diagonal([ones(n);-ones(m)])
+  A = sparse(A)
+
+  b = randn(rng, n + m)
+
+  return A,b
+end
 
 @testset "All Unit Tests" begin
 
@@ -16,6 +27,7 @@ end
   include("./UnitTests/refactoring.jl")
   include("./UnitTests/non-quasidef.jl")
   include("./UnitTests/inertia.jl")
+  include("./UnitTests/update_matrix.jl")
 
 end
 nothing
