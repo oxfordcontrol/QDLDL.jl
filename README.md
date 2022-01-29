@@ -1,5 +1,5 @@
 # QDLDL.jl - A free LDL factorisation routine 
-[![Build Status](https://travis-ci.com/oxfordcontrol/QDLDL.jl.svg?branch=master)](https://travis-ci.com/oxfordcontrol/QDLDL.jl)
+   <a href="https://github.com/oxfordcontrol/COSMO.jl/actions"><img src="https://github.com/oxfordcontrol/COSMO.jl/workflows/ci/badge.svg?branch=master"></a>
 [![codecov](https://codecov.io/gh/oxfordcontrol/QDLDL.jl/branch/master/graph/badge.svg)](https://codecov.io/gh/oxfordcontrol/QDLDL.jl)
 
 QDLDL is a factorisation routine for quasi-definite linear systems `Ax=b`. This is a pure Julia implementation of the C language QDLDL solver (https://github.com/oxfordcontrol/qdldl) with some additional functionality implemented to support refactorisations. 
