@@ -16,6 +16,8 @@ end
   include("./UnitTests/refactoring.jl")
   include("./UnitTests/non-quasidef.jl")
   include("./UnitTests/inertia.jl")
+  include("./UnitTests/regularization.jl")
+
 
 end
 nothing
