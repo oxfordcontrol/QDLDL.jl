@@ -23,9 +23,9 @@ using QDLDL
   @test regularized_entries(f) == 2
 
   ϵ = 1e-30
-  f = qdldl(A,Dsigns = signs,regularize_eps = ϵ)
-  @test f.workspace.D == [a,a]
-  @test regularized_entries(f) == 0
+  f = qdldl(A,Dsigns = signs,regularize_eps = ϵ, regularize_delta = δ)
+  @test f.workspace.D == [a,-δ]
+  @test regularized_entries(f) == 1
 
   #just setting A[1,1] = 0 should still allow
   #regularization, since A[1,1] will be structurally
