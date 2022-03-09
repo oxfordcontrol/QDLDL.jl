@@ -1,6 +1,6 @@
 module QDLDL
 
-export qdldl, \, solve, solve!, refactor!, update_values!, offset_values!, positive_inertia, regularized_entries
+export qdldl, \, solve, solve!, refactor!, update_diagonal!, update_values!, offset_values!, positive_inertia, regularized_entries
 
 using AMD, SparseArrays
 using LinearAlgebra: istriu, triu, Diagonal
@@ -226,6 +226,33 @@ function offset_values!(
     end
 
     return nothing
+end
+
+function update_diagonal!(F::QDLDLFactorisation,indices,scalarValue::Real)
+    update_diagonal!(F,indices,[scalarValue])
+end
+
+
+function update_diagonal!(F::QDLDLFactorisation,indices,values)
+
+    (length(values) != length(indices) && length(values) != 1 ) &&
+        throw(DimensionMismatch("Index and value arrays must be the same size, or values must be a scalar."))
+
+    triuA = F.workspace.triuA
+    invp  = F.iperm
+    nvals = length(values)
+
+    #triuA should be full rank and upper triangular, so the diagonal element
+    #in each column should always be the last nonzero
+    for i in 1:length(indices)
+         thecol = invp[indices[i]]
+         elidx  = triuA.colptr[thecol+1]-1
+         therow = triuA.rowval[elidx]
+         therow == thecol || error("triu(A) is missing diagonal entries")
+         val = nvals == 1 ? values[1] : values[i]
+         triuA.nzval[elidx] = val
+    end
+
 end
 
 
