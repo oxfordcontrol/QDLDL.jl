@@ -1,6 +1,6 @@
 module QDLDL
 
-export qdldl, \, solve, solve!, update_diagonal!, positive_inertia
+export qdldl, \, solve, solve!, refactor!, update_diagonal!, update_values!, offset_values!, positive_inertia, regularized_entries
 
 using AMD, SparseArrays
 using LinearAlgebra: istriu, triu, Diagonal
@@ -30,15 +30,35 @@ struct QDLDLWorkspace{Tf<:AbstractFloat,Ti<:Integer}
     Dinv::Vector{Tf}
 
     #number of positive values in D
-    positive_inertia::Base.RefValue{Ti}
+    positive_inertia::Ref{Ti}
 
     #The upper triangular matrix factorisation target
+    #This is the post ordering PAPt of the original data
     triuA::SparseMatrixCSC{Tf,Ti}
+
+    #mapping from entries in the triu form
+    #of the original input to the post ordering
+    #triu form used for the factorization
+    #this can be used when modifying entries
+    #of the data matrix for refactoring
+    AtoPAPt::Union{Vector{Ti},Nothing}
+
+    #regularization parameters
+    Dsigns::Union{Vector{Ti},Nothing}
+    regularize_eps::Tf
+    regularize_delta::Tf
+
+    #number of regularized entries in D
+    regularize_count::Ref{Ti}
+
 end
 
-function QDLDLWorkspace(triuA::SparseMatrixCSC{Tf,Ti}) where {Tf<:AbstractFloat,Ti<:Integer}
-
-    #A should be an upper triangular matrix input
+function QDLDLWorkspace(triuA::SparseMatrixCSC{Tf,Ti},
+                        AtoPAPt::Union{Vector{Ti},Nothing},
+                        Dsigns::Union{Vector{Ti},Nothing},
+                        regularize_eps::Tf,
+                        regularize_delta::Tf
+) where {Tf<:AbstractFloat,Ti<:Integer}
 
     etree  = Vector{Ti}(undef,triuA.n)
     Lnz    = Vector{Ti}(undef,triuA.n)
@@ -46,7 +66,7 @@ function QDLDLWorkspace(triuA::SparseMatrixCSC{Tf,Ti}) where {Tf<:AbstractFloat,
     bwork  = Vector{Bool}(undef,triuA.n)
     fwork  = Vector{Tf}(undef,triuA.n)
 
-    #compute elimination gree using QDLDL converted code
+    #compute elimination tree using QDLDL converted code
     sumLnz = QDLDL_etree!(triuA.n,triuA.colptr,triuA.rowval,iwork,Lnz,etree)
 
     if(sumLnz < 0)
@@ -65,9 +85,15 @@ function QDLDLWorkspace(triuA::SparseMatrixCSC{Tf,Ti}) where {Tf<:AbstractFloat,
 
     #allocate for positive inertia count.  -1 to
     #start since we haven't counted anything yet
-    positive_inertia = Base.RefValue{Ti}(-1)
+    positive_inertia = Ref{Ti}(-1)
 
-    QDLDLWorkspace(etree,Lnz,iwork,bwork,fwork,Ln,Lp,Li,Lx,D,Dinv,positive_inertia,triuA)
+    #number of regularized entries in D. None to start
+    regularize_count = Ref{Ti}(0)
+
+    QDLDLWorkspace(etree,Lnz,iwork,bwork,fwork,
+                   Ln,Lp,Li,Lx,D,Dinv,positive_inertia,triuA,
+                   AtoPAPt, Dsigns,regularize_eps,
+                   regularize_delta,regularize_count)
 
 end
 
@@ -84,7 +110,7 @@ struct QDLDLFactorisation{Tf<:AbstractFloat,Ti<:Integer}
     #workspace data
     workspace::QDLDLWorkspace{Tf,Ti}
     #is it logical factorisation only?
-    logical::Bool
+    logical::Ref{Bool}
 end
 
 
@@ -96,26 +122,50 @@ end
 # qdldl(A,perm = nothing) factors without reordering
 #
 # qdldl(A,logical=true) produces a logical factorisation only
+#
+# qdldl(A,signs = s, thresh_eps = ϵ, thresh_delta = δ) produces
+# a factorization with dynamic regularization based on the vector
+# of signs in s and using regularization parameters (ϵ,δ).  The
+# scalars (ϵ,δ) = (1e-12,1e-7) by default.   By default s = nothing,
+# and no regularization is performed.
 
-function qdldl(A::SparseMatrixCSC{Tv,Ti};
+function qdldl(A::SparseMatrixCSC{Tf,Ti};
                perm::Union{Array{Ti},Nothing}=amd(A),
-               logical::Bool=false
-              ) where {Tv<:AbstractFloat, Ti<:Integer}
+               logical::Bool=false,
+               Dsigns::Union{Array{Ti},Nothing} = nothing,
+               regularize_eps::Tf = Tf(1e-12),
+               regularize_delta::Tf = Tf(1e-7)
+              ) where {Tf<:AbstractFloat, Ti<:Integer}
 
     #store the inverse permutation to enable matrix updates
     iperm = perm == nothing ? nothing : invperm(perm)
 
+    if(!istriu(A))
+        A = triu(A)
+    end
+
     #permute using symperm, producing a triu matrix to factor
     if perm != nothing
-        A = permute_symmetric(A, iperm)  #returns an upper triangular matrix
+        A, AtoPAPt = permute_symmetric(A, iperm)  #returns an upper triangular matrix
     else
-        if(!istriu(A))
-            A = triu(A);
+        AtoPAPt = nothing
+    end
+
+    #hold an internal copy of the (possibly permuted)
+    #vector of signs if one was specified
+    if(Dsigns != nothing)
+        mysigns = similar(Dsigns)
+        if(perm == nothing)
+            mysigns .= Dsigns
+        else
+            permute!(mysigns,Dsigns,perm)
         end
+    else
+        mysigns = nothing
     end
 
     #allocate workspace
-    workspace = QDLDLWorkspace(A)
+    workspace = QDLDLWorkspace(A,AtoPAPt,mysigns,regularize_eps,regularize_delta)
 
     #factor the matrix
     factor!(workspace,logical)
@@ -128,7 +178,10 @@ function qdldl(A::SparseMatrixCSC{Tv,Ti};
                         workspace.Lx)
     Dinv = Diagonal(workspace.Dinv)
 
-    return QDLDLFactorisation(perm, iperm, L, Dinv, workspace, logical)
+    #Psss a Ref{Bool} to the constructor since QDLDLFactorisation
+    #is immutable.   All internal functions will just use a Bool
+
+    return QDLDLFactorisation(perm, iperm, L, Dinv, workspace, Ref{Bool}(logical))
 
 end
 
@@ -136,6 +189,44 @@ function positive_inertia(F::QDLDLFactorisation)
     F.workspace.positive_inertia[]
 end
 
+function regularized_entries(F::QDLDLFactorisation)
+    F.workspace.regularize_count[]
+end
+
+
+function update_values!(
+    F::QDLDLFactorisation,
+    indices::Union{AbstractArray{Ti},Ti},
+    values::Union{AbstractArray{Tf},Tf},
+) where{Ti <: Integer, Tf <: Real}
+
+    triuA   = F.workspace.triuA     #post permutation internal data
+    AtoPAPt = F.workspace.AtoPAPt   #mapping from input matrix entries to triuA
+
+    triuA.nzval[AtoPAPt[indices]] .= values
+
+    return nothing
+end
+
+
+function offset_values!(
+    F::QDLDLFactorisation,
+    indices::AbstractArray{Ti},
+    offset::Union{Tf,AbstractArray{Tf}},
+    signs::Union{Ti,AbstractArray{Ti}} = 1
+) where{Ti <: Integer, Tf <: Real}
+
+    triuA   = F.workspace.triuA     #post permutation internal data
+    AtoPAPt = F.workspace.AtoPAPt   #mapping from input matrix entries to triuA
+
+    if(signs === 1)
+        triuA.nzval[AtoPAPt[indices]] .+= offset
+    else
+        triuA.nzval[AtoPAPt[indices]] .+= offset.*signs
+    end
+
+    return nothing
+end
 
 function update_diagonal!(F::QDLDLFactorisation,indices,scalarValue::Real)
     update_diagonal!(F,indices,[scalarValue])
@@ -151,18 +242,19 @@ function update_diagonal!(F::QDLDLFactorisation,indices,values)
     invp  = F.iperm
     nvals = length(values)
 
-    #triuA is full rank and  upper triangular, so the diagonal element
-    #in each column will always be the last nonzero
+    #triuA should be full rank and upper triangular, so the diagonal element
+    #in each column should always be the last nonzero
     for i in 1:length(indices)
-         idx = invp[indices[i]]
+         thecol = invp[indices[i]]
+         elidx  = triuA.colptr[thecol+1]-1
+         therow = triuA.rowval[elidx]
+         therow == thecol || error("triu(A) is missing diagonal entries")
          val = nvals == 1 ? values[1] : values[i]
-         triuA.nzval[triuA.colptr[idx+1]-1] = val
+         triuA.nzval[elidx] = val
     end
 
-    #force a refactorisation
-    refactor!(F)
-
 end
+
 
 
 function Base.:\(F::QDLDLFactorisation,b)
@@ -171,11 +263,18 @@ end
 
 
 function refactor!(F::QDLDLFactorisation)
-    factor!(F.workspace,F.logical)
+
+    #It never makes sense to call refactor for a logical
+    #factorization since it will always be the same.  Calling
+    #this function implies that we want a numerical factorization
+
+    F.logical[] = false  #in case not already
+
+    factor!(F.workspace,F.logical[])
 end
 
 
-function factor!(workspace::QDLDLWorkspace{Tf,Ti},logical) where {Tf<:AbstractFloat,Ti<:Integer}
+function factor!(workspace::QDLDLWorkspace{Tf,Ti},logical::Bool) where {Tf<:AbstractFloat,Ti<:Integer}
 
     if(logical)
         workspace.Lx   .= 1
@@ -185,7 +284,7 @@ function factor!(workspace::QDLDLWorkspace{Tf,Ti},logical) where {Tf<:AbstractFl
 
     #factor using QDLDL converted code
     A = workspace.triuA
-    posDCount = QDLDL_factor!(A.n,A.colptr,A.rowval,A.nzval,
+    posDCount  = QDLDL_factor!(A.n,A.colptr,A.rowval,A.nzval,
                               workspace.Lp,
                               workspace.Li,
                               workspace.Lx,
@@ -196,7 +295,12 @@ function factor!(workspace::QDLDLWorkspace{Tf,Ti},logical) where {Tf<:AbstractFl
                               workspace.bwork,
                               workspace.iwork,
                               workspace.fwork,
-                              logical)
+                              logical,
+                              workspace.Dsigns,
+                              workspace.regularize_eps,
+                              workspace.regularize_delta,
+                              workspace.regularize_count
+                              )
 
     if(posDCount < 0)
         error("Zero entry in D (matrix is not quasidefinite)")
@@ -222,7 +326,7 @@ end
 function solve!(F::QDLDLFactorisation,b)
 
     #bomb if logical factorisation only
-    if F.logical
+    if F.logical[]
         error("Can't solve with logical factorisation only")
     end
 
@@ -289,18 +393,22 @@ end
 
 
 
-function QDLDL_factor!(n,Ap,Ai,Ax,Lp,Li,Lx,D,Dinv,Lnz,etree,bwork,iwork,fwork,logicalFactor)
+function QDLDL_factor!(
+        n,Ap,Ai,Ax,Lp,Li,Lx,
+        D,Dinv,Lnz,etree,bwork,iwork,fwork,
+        logicalFactor::Bool,Dsigns,
+        regularize_eps,regularize_delta,regularize_count
+)
 
-
-    positiveValuesInD = 0
+    positiveValuesInD  = 0
+    regularize_count[] = 0
 
     #partition working memory into pieces
     yMarkers        = bwork
     yIdx            = view(iwork,      1:n)
     elimBuffer      = view(iwork,  (n+1):2*n)
     LNextSpaceInCol = view(iwork,(2*n+1):3*n)
-    yVals           = fwork;
-
+    yVals           = fwork
 
     Lp[1] = 1 #first column starts at index one / Julia is 1 indexed
 
@@ -321,12 +429,17 @@ function QDLDL_factor!(n,Ap,Ai,Ax,Lp,Li,Lx,D,Dinv,Lnz,etree,bwork,iwork,fwork,lo
     if(!logicalFactor)
         # First element of the diagonal D.
         D[1]     = Ax[1]
+        if(Dsigns != nothing && Dsigns[1]*D[1] < regularize_eps)
+            D[1] = regularize_delta * Dsigns[1]
+            regularize_count[] += 1
+        end
+
         if(D[1] == 0.0) return -1 end
         if(D[1]  > 0.0) positiveValuesInD += 1 end
         Dinv[1] = 1/D[1];
     end
 
-    #Start from 1 here. The upper LH corner is trivially 0
+    #Start from second row here. The upper LH corner is trivially 0
     #in L b/c we are only computing the subdiagonal elements
     @inbounds for k = 2:n
 
@@ -375,7 +488,7 @@ function QDLDL_factor!(n,Ap,Ai,Ax,Lp,Li,Lx,D,Dinv,Lnz,etree,bwork,iwork,fwork,lo
 
                     yMarkers[nextIdx] = QDLDL_USED;   #I touched this one
                     #NB: Julia is 1-indexed, so I increment nnzE first here,
-                    #no after writing into elimBuffer as in the C version
+                    #not after writing into elimBuffer as in the C version
                     nnzE += 1                   #the list is one longer than before
                     elimBuffer[nnzE] = nextIdx; #It goes in the current list
                     nextIdx = etree[nextIdx];   #one step further along tree
@@ -430,9 +543,16 @@ function QDLDL_factor!(n,Ap,Ai,Ax,Lp,Li,Lx,D,Dinv,Lnz,etree,bwork,iwork,fwork,lo
             #reset the yvalues and indices back to zero and QDLDL_UNUSED
             #once I'm done with them
             yVals[cidx]     = 0.0
-            yMarkers[cidx]  = QDLDL_UNUSED;
+            yMarkers[cidx]  = QDLDL_UNUSED
 
         end #end for i
+
+        #apply dynamic regularization if a sign
+        #vector has been specified.
+        if(Dsigns != nothing && Dsigns[k]*D[k] < regularize_eps)
+            D[k] = regularize_delta * Dsigns[k]
+            regularize_count[] += 1
+        end
 
         #Maintain a count of the positive entries
         #in D.  If we hit a zero, we can't factor
@@ -502,7 +622,13 @@ end
 
 
 "Given a sparse symmetric matrix `A` (with only upper triangular entries), return permuted sparse symmetric matrix `P` (only upper triangular) given the inverse permutation vector `iperm`."
-function permute_symmetric(A::SparseMatrixCSC{Tv, Ti}, iperm::AbstractVector{Ti}, Pr::AbstractVector{Ti} = zeros(Ti, nnz(A)), Pc::AbstractVector{Ti} = zeros(Ti, size(A, 1) + 1), Pv::AbstractVector{Tv} = zeros(Tv, nnz(A)) ) where {Tv <: AbstractFloat, Ti <: Integer}
+function permute_symmetric(
+    A::SparseMatrixCSC{Tf, Ti},
+    iperm::AbstractVector{Ti},
+    Pr::AbstractVector{Ti} = zeros(Ti, nnz(A)),
+    Pc::AbstractVector{Ti} = zeros(Ti, size(A, 1) + 1),
+    Pv::AbstractVector{Tf} = zeros(Tf, nnz(A))
+) where {Tf <: AbstractFloat, Ti <: Integer}
 
     # perform a number of argument checks
     m, n = size(A)
@@ -513,18 +639,32 @@ function permute_symmetric(A::SparseMatrixCSC{Tv, Ti}, iperm::AbstractVector{Ti}
     if n != length(iperm)
         throw(DimensionMismatch("Dimensions of sparse matrix A must equal the length of iperm, $((m,n)) != $(iperm)"))
     end
-    return _permute_symmetric(A, iperm, Pr, Pc, Pv)
+
+    #we will record a mapping of entries from A to PAPt
+    AtoPAPt = zeros(Ti,length(Pv))
+
+    P = _permute_symmetric(A, AtoPAPt, iperm, Pr, Pc, Pv)
+    return P, AtoPAPt
 end
 
 # the main function without extra argument checks
 # following the book: Timothy Davis - Direct Methods for Sparse Linear Systems
-function _permute_symmetric(A::SparseMatrixCSC{Tv, Ti}, iperm::AbstractVector{Ti}, Pr::AbstractVector{Ti}, Pc::AbstractVector{Ti}, Pv::AbstractVector{Tv}) where {Tv <: AbstractFloat, Ti <: Integer}
+function _permute_symmetric(
+    A::SparseMatrixCSC{Tf, Ti},
+    AtoPAPt::AbstractVector{Ti},
+    iperm::AbstractVector{Ti},
+    Pr::AbstractVector{Ti},
+    Pc::AbstractVector{Ti},
+    Pv::AbstractVector{Tf}
+) where {Tf <: AbstractFloat, Ti <: Integer}
+
     # 1. count number of entries that each column of P will have
     n = size(A, 2)
     num_entries = zeros(Ti, n)
     Ar = A.rowval
     Ac = A.colptr
     Av = A.nzval
+
     # count the number of upper-triangle entries in columns of P, keeping in mind the row permutation
     for colA = 1:n
         colP = iperm[colA]
@@ -570,15 +710,18 @@ function _permute_symmetric(A::SparseMatrixCSC{Tv, Ti}, iperm::AbstractVector{Ti
                 Pr[rowP_idx] = min(colP, rowP)
                 Pv[rowP_idx] = Av[rowA_idx]
 
+                #record this into the mapping vector
+                AtoPAPt[rowA_idx] = rowP_idx
+
                 # increment next free location
                 row_starts[col_idx] += 1
             end
         end
     end
     nz_new = Pc[end] - 1
-    P = SparseMatrixCSC{Tv, Ti}(n, n, Pc, Pr[1:nz_new], Pv[1:nz_new])
-    # order row indices within P.rowcal[P.colptr[k]:P.colptr[k+1]-1]
-    return (P')'
+    P = SparseMatrixCSC{Tf, Ti}(n, n, Pc, Pr[1:nz_new], Pv[1:nz_new])
+
+    return P
 end
 
 
