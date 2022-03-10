@@ -22,10 +22,12 @@ rng = Random.MersenneTwister(2401)
 
   #update the diagonal of M and F and try again
   update_diagonal!(F,(n+1):(m+n),diag(C2))
+  refactor!(F)
   @test norm(M2\b - F\b) <= 1e-10
 
   #update to a scalar and try again
   update_diagonal!(F,(n+1):(m+n),-pi)
+  refactor!(F)
   @test norm(M3\b - F\b) <= 1e-10
 
 
