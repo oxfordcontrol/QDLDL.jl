@@ -17,7 +17,7 @@ end
   include("./UnitTests/non-quasidef.jl")
   include("./UnitTests/inertia.jl")
   include("./UnitTests/regularization.jl")
-
+  include("./UnitTests/update_values.jl")
 
 end
 nothing
