@@ -1,6 +1,6 @@
 module QDLDL
 
-export qdldl, \, solve, solve!, refactor!, update_diagonal!, update_values!, offset_values!, positive_inertia, regularized_entries
+export qdldl, \, solve, solve!, refactor!, update_diagonal!, update_values!, scale_values!, offset_values!, positive_inertia, regularized_entries
 
 using AMD, SparseArrays
 using LinearAlgebra: istriu, triu, Diagonal
@@ -142,7 +142,11 @@ function qdldl(A::SparseMatrixCSC{Tf,Ti};
 
     if(!istriu(A))
         A = triu(A)
+    else
+        #either way, we take an internal copy
+        A = deepcopy(A)
     end
+
 
     #permute using symperm, producing a triu matrix to factor
     if perm != nothing
@@ -203,11 +207,35 @@ function update_values!(
     triuA   = F.workspace.triuA     #post permutation internal data
     AtoPAPt = F.workspace.AtoPAPt   #mapping from input matrix entries to triuA
 
-    triuA.nzval[AtoPAPt[indices]] .= values
+    #PJG:this is probably broken if there is no permutation
+    if isnothing(AtoPAPt)
+        triuA.nzval[indices] .= values
+    else
+        triuA.nzval[AtoPAPt[indices]] .= values
+    end
 
     return nothing
 end
 
+
+function scale_values!(
+    F::QDLDLFactorisation,
+    indices::Union{AbstractArray{Ti},Ti},
+    scale::Tf,
+) where{Ti <: Integer, Tf <: Real}
+
+    triuA   = F.workspace.triuA     #post permutation internal data
+    AtoPAPt = F.workspace.AtoPAPt   #mapping from input matrix entries to triuA
+
+    #PJG:this is probably broken if there is no permutation
+    if isnothing(AtoPAPt)
+        triuA.nzval[indices] .*= scale
+    else
+        triuA.nzval[AtoPAPt[indices]] .*= scale
+    end
+
+    return nothing
+end
 
 function offset_values!(
     F::QDLDLFactorisation,
@@ -219,6 +247,7 @@ function offset_values!(
     triuA   = F.workspace.triuA     #post permutation internal data
     AtoPAPt = F.workspace.AtoPAPt   #mapping from input matrix entries to triuA
 
+    #PJG indices also broken here for no permutation
     if(signs === 1)
         triuA.nzval[AtoPAPt[indices]] .+= offset
     else
