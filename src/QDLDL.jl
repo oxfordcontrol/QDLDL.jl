@@ -209,9 +209,9 @@ function update_values!(
 
     #PJG:this is probably broken if there is no permutation
     if isnothing(AtoPAPt)
-        triuA.nzval[indices] .= values
+        @views triuA.nzval[indices] .= values
     else
-        triuA.nzval[AtoPAPt[indices]] .= values
+        @views triuA.nzval[AtoPAPt[indices]] .= values
     end
 
     return nothing
@@ -249,9 +249,9 @@ function offset_values!(
 
     #PJG indices also broken here for no permutation
     if(signs === 1)
-        triuA.nzval[AtoPAPt[indices]] .+= offset
+        @views triuA.nzval[AtoPAPt[indices]] .+= offset
     else
-        triuA.nzval[AtoPAPt[indices]] .+= offset.*signs
+        @views triuA.nzval[AtoPAPt[indices]] .+= offset.*signs
     end
 
     return nothing
