@@ -1,6 +1,6 @@
 module QDLDL
 
-export qdldl, \, solve, solve!, refactor!, update_values!, scale_values!, offset_diagonal!, positive_inertia, regularized_entries
+export qdldl, \, solve, solve!, refactor!, update_values!, scale_values!, offset_values!, positive_inertia, regularized_entries
 
 using AMD, SparseArrays
 using LinearAlgebra: istriu, triu, Diagonal
@@ -200,14 +200,13 @@ end
 
 function update_values!(
     F::QDLDLFactorisation,
-    indices::Union{AbstractArray{Ti},Ti},
-    values::Union{AbstractArray{Tf},Tf},
+    indices::Union{AbstractVector{Ti},Ti},
+    values::Union{AbstractVector{Tf},Tf},
 ) where{Ti <: Integer, Tf <: Real}
 
     triuA   = F.workspace.triuA     #post permutation internal data
     AtoPAPt = F.workspace.AtoPAPt   #mapping from input matrix entries to triuA
 
-    #PJG:this is probably broken if there is no permutation
     if isnothing(AtoPAPt)
         @views triuA.nzval[indices] .= values
     else
@@ -220,46 +219,40 @@ end
 
 function scale_values!(
     F::QDLDLFactorisation,
-    indices::Union{AbstractArray{Ti},Ti},
+    indices::Union{AbstractVector{Ti},Ti},
     scale::Tf,
 ) where{Ti <: Integer, Tf <: Real}
 
     triuA   = F.workspace.triuA     #post permutation internal data
     AtoPAPt = F.workspace.AtoPAPt   #mapping from input matrix entries to triuA
 
-    #PJG:this is probably broken if there is no permutation
     if isnothing(AtoPAPt)
-        triuA.nzval[indices] .*= scale
+        @views triuA.nzval[indices] .*= scale
     else
-        triuA.nzval[AtoPAPt[indices]] .*= scale
+        @views triuA.nzval[AtoPAPt[indices]] .*= scale
     end
 
     return nothing
 end
 
-function offset_diagonal!(
+function offset_values!(
     F::QDLDLFactorisation,
-    indices::UnitRange{Ti},
+    indices::Union{AbstractVector{Ti},Ti},
     offset::Tf,
-    signs::AbstractVector{<:Integer}
+    signs::AbstractVector{<:Integer},
 ) where{Ti <: Integer, Tf <: Real}
 
-    triuA   = F.workspace.triuA     
-    iperm   = F.iperm     
+    triuA   = F.workspace.triuA     #post permutation internal data
+    AtoPAPt = F.workspace.AtoPAPt   #mapping from input matrix entries to triuA
 
-    # triuA should be full rank and upper triangular, so the diagonal element
-    # in each column should always be the last nonzero
-
-    for (col,sign) in zip(indices,signs)
-
-        col = iperm[col]
-        idx = triuA.colptr[col+1] - 1;
-
-        @assert triuA.rowval[idx] == col 
-        triuA.nzval[idx] += offset.*sign
+    if isnothing(AtoPAPt)
+        @views triuA.nzval[indices] .+= offset.*signs
+    else
+        @views triuA.nzval[AtoPAPt[indices]] .+= offset.*signs
     end
 
     return nothing
+
 end
 
 
