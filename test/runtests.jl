@@ -13,7 +13,6 @@ end
 @testset "All Unit Tests" begin
 
   include("./UnitTests/basic.jl")
-  include("./UnitTests/refactoring.jl")
   include("./UnitTests/non-quasidef.jl")
   include("./UnitTests/inertia.jl")
   include("./UnitTests/regularization.jl")
