@@ -1,6 +1,6 @@
 module QDLDL
 
-export qdldl, \, solve, solve!, refactor!, update_diagonal!, update_values!, offset_values!, positive_inertia, regularized_entries
+export qdldl, \, solve, solve!, refactor!, update_values!, scale_values!, offset_values!, positive_inertia, regularized_entries
 
 using AMD, SparseArrays
 using LinearAlgebra: istriu, triu, Diagonal
@@ -138,14 +138,18 @@ function qdldl(A::SparseMatrixCSC{Tf,Ti};
               ) where {Tf<:AbstractFloat, Ti<:Integer}
 
     #store the inverse permutation to enable matrix updates
-    iperm = perm == nothing ? nothing : invperm(perm)
+    iperm = perm === nothing ? nothing : invperm(perm)
 
     if(!istriu(A))
         A = triu(A)
+    else
+        #either way, we take an internal copy
+        A = deepcopy(A)
     end
 
+
     #permute using symperm, producing a triu matrix to factor
-    if perm != nothing
+    if perm !== nothing
         A, AtoPAPt = permute_symmetric(A, iperm)  #returns an upper triangular matrix
     else
         AtoPAPt = nothing
@@ -153,9 +157,9 @@ function qdldl(A::SparseMatrixCSC{Tf,Ti};
 
     #hold an internal copy of the (possibly permuted)
     #vector of signs if one was specified
-    if(Dsigns != nothing)
+    if(Dsigns !== nothing)
         mysigns = similar(Dsigns)
-        if(perm == nothing)
+        if(perm === nothing)
             mysigns .= Dsigns
         else
             permute!(mysigns,Dsigns,perm)
@@ -196,65 +200,60 @@ end
 
 function update_values!(
     F::QDLDLFactorisation,
-    indices::Union{AbstractArray{Ti},Ti},
-    values::Union{AbstractArray{Tf},Tf},
+    indices::Union{AbstractVector{Ti},Ti},
+    values::Union{AbstractVector{Tf},Tf},
 ) where{Ti <: Integer, Tf <: Real}
 
     triuA   = F.workspace.triuA     #post permutation internal data
     AtoPAPt = F.workspace.AtoPAPt   #mapping from input matrix entries to triuA
 
-    triuA.nzval[AtoPAPt[indices]] .= values
+    if isnothing(AtoPAPt)
+        @views triuA.nzval[indices] .= values
+    else
+        @views triuA.nzval[AtoPAPt[indices]] .= values
+    end
 
     return nothing
 end
 
+
+function scale_values!(
+    F::QDLDLFactorisation,
+    indices::Union{AbstractVector{Ti},Ti},
+    scale::Tf,
+) where{Ti <: Integer, Tf <: Real}
+
+    triuA   = F.workspace.triuA     #post permutation internal data
+    AtoPAPt = F.workspace.AtoPAPt   #mapping from input matrix entries to triuA
+
+    if isnothing(AtoPAPt)
+        @views triuA.nzval[indices] .*= scale
+    else
+        @views triuA.nzval[AtoPAPt[indices]] .*= scale
+    end
+
+    return nothing
+end
 
 function offset_values!(
     F::QDLDLFactorisation,
-    indices::AbstractArray{Ti},
-    offset::Union{Tf,AbstractArray{Tf}},
-    signs::Union{Ti,AbstractArray{Ti}} = 1
+    indices::Union{AbstractVector{Ti},Ti},
+    offset::Tf,
+    signs::AbstractVector{<:Integer},
 ) where{Ti <: Integer, Tf <: Real}
 
     triuA   = F.workspace.triuA     #post permutation internal data
     AtoPAPt = F.workspace.AtoPAPt   #mapping from input matrix entries to triuA
 
-    if(signs === 1)
-        triuA.nzval[AtoPAPt[indices]] .+= offset
+    if isnothing(AtoPAPt)
+        @views triuA.nzval[indices] .+= offset.*signs
     else
-        triuA.nzval[AtoPAPt[indices]] .+= offset.*signs
+        @views triuA.nzval[AtoPAPt[indices]] .+= offset.*signs
     end
 
     return nothing
-end
-
-function update_diagonal!(F::QDLDLFactorisation,indices,scalarValue::Real)
-    update_diagonal!(F,indices,[scalarValue])
-end
-
-
-function update_diagonal!(F::QDLDLFactorisation,indices,values)
-
-    (length(values) != length(indices) && length(values) != 1 ) &&
-        throw(DimensionMismatch("Index and value arrays must be the same size, or values must be a scalar."))
-
-    triuA = F.workspace.triuA
-    invp  = F.iperm
-    nvals = length(values)
-
-    #triuA should be full rank and upper triangular, so the diagonal element
-    #in each column should always be the last nonzero
-    for i in 1:length(indices)
-         thecol = invp[indices[i]]
-         elidx  = triuA.colptr[thecol+1]-1
-         therow = triuA.rowval[elidx]
-         therow == thecol || error("triu(A) is missing diagonal entries")
-         val = nvals == 1 ? values[1] : values[i]
-         triuA.nzval[elidx] = val
-    end
 
 end
-
 
 
 function Base.:\(F::QDLDLFactorisation,b)
@@ -331,7 +330,7 @@ function solve!(F::QDLDLFactorisation,b)
     end
 
     #permute b
-    tmp = F.perm == nothing ? b : permute!(F.workspace.fwork,b,F.perm)
+    tmp = F.perm === nothing ? b : permute!(F.workspace.fwork,b,F.perm)
 
     QDLDL_solve!(F.workspace.Ln,
                  F.workspace.Lp,
@@ -341,7 +340,7 @@ function solve!(F::QDLDLFactorisation,b)
                  tmp)
 
     #inverse permutation
-    b = F.perm == nothing ? tmp : ipermute!(b,F.workspace.fwork,F.perm)
+    b = F.perm === nothing ? tmp : ipermute!(b,F.workspace.fwork,F.perm)
 
     return nothing
 end
@@ -429,7 +428,7 @@ function QDLDL_factor!(
     if(!logicalFactor)
         # First element of the diagonal D.
         D[1]     = Ax[1]
-        if(Dsigns != nothing && Dsigns[1]*D[1] < regularize_eps)
+        if(Dsigns !== nothing && Dsigns[1]*D[1] < regularize_eps)
             D[1] = regularize_delta * Dsigns[1]
             regularize_count[] += 1
         end
@@ -549,7 +548,7 @@ function QDLDL_factor!(
 
         #apply dynamic regularization if a sign
         #vector has been specified.
-        if(Dsigns != nothing && Dsigns[k]*D[k] < regularize_eps)
+        if(Dsigns !== nothing && Dsigns[k]*D[k] < regularize_eps)
             D[k] = regularize_delta * Dsigns[k]
             regularize_count[] += 1
         end
