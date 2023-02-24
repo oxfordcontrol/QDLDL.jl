@@ -1,6 +1,6 @@
 module QDLDL
 
-export qdldl, \, solve, solve!, refactor!, update_values!, scale_values!, offset_values!, positive_inertia, regularized_entries
+export qdldl, \, solve, solve!, refactor!, update_values!, scale_values!,  positive_inertia, regularized_entries
 
 using AMD, SparseArrays
 using LinearAlgebra: istriu, triu, Diagonal
@@ -49,7 +49,9 @@ struct QDLDLWorkspace{Tf<:AbstractFloat,Ti<:Integer}
     regularize_delta::Tf
 
     #number of regularized entries in D
-    regularize_count::Ref{Ti}
+    #length 1 vector instead of ref to avoid allocations
+    #while maintaining immutability
+    regularize_count::Vector{Ti}
 
 end
 
@@ -88,7 +90,7 @@ function QDLDLWorkspace(triuA::SparseMatrixCSC{Tf,Ti},
     positive_inertia = Ref{Ti}(-1)
 
     #number of regularized entries in D. None to start
-    regularize_count = Ref{Ti}(0)
+    regularize_count = zeros(Ti,1)
 
     QDLDLWorkspace(etree,Lnz,iwork,bwork,fwork,
                    Ln,Lp,Li,Lx,D,Dinv,positive_inertia,triuA,
@@ -118,23 +120,28 @@ end
 
 # Usage :
 # qdldl(A) uses the default AMD ordering
-# qdldl(A,perm=p) uses a caller specified ordering
+# qdldl(A,perm = p) uses a caller specified ordering
 # qdldl(A,perm = nothing) factors without reordering
 #
-# qdldl(A,logical=true) produces a logical factorisation only
+# qdldl(A,logical = true) produces a logical factorisation only
 #
 # qdldl(A,signs = s, thresh_eps = ϵ, thresh_delta = δ) produces
 # a factorization with dynamic regularization based on the vector
 # of signs in s and using regularization parameters (ϵ,δ).  The
 # scalars (ϵ,δ) = (1e-12,1e-7) by default.   By default s = nothing,
 # and no regularization is performed.
+#
+# qdldl(A,amd_dense_scale = s) scales AMD.AMD_DENSE by a factor s :
+# (s = 1.0 by default).   This is only used if no perm parameter 
+# is provided. 
 
 function qdldl(A::SparseMatrixCSC{Tf,Ti};
-               perm::Union{Array{Ti},Nothing}=amd(A),
+               amd_dense_scale::Tf = Tf(1.0),
+               perm::Union{Array{Ti},Nothing}=_get_amd_ordering(A,amd_dense_scale),
                logical::Bool=false,
                Dsigns::Union{Array{Ti},Nothing} = nothing,
                regularize_eps::Tf = Tf(1e-12),
-               regularize_delta::Tf = Tf(1e-7)
+               regularize_delta::Tf = Tf(1e-7),
               ) where {Tf<:AbstractFloat, Ti<:Integer}
 
     #store the inverse permutation to enable matrix updates
@@ -194,7 +201,7 @@ function positive_inertia(F::QDLDLFactorisation)
 end
 
 function regularized_entries(F::QDLDLFactorisation)
-    F.workspace.regularize_count[]
+    F.workspace.regularize_count[1]
 end
 
 
@@ -233,26 +240,6 @@ function scale_values!(
     end
 
     return nothing
-end
-
-function offset_values!(
-    F::QDLDLFactorisation,
-    indices::Union{AbstractVector{Ti},Ti},
-    offset::Tf,
-    signs::AbstractVector{<:Integer},
-) where{Ti <: Integer, Tf <: Real}
-
-    triuA   = F.workspace.triuA     #post permutation internal data
-    AtoPAPt = F.workspace.AtoPAPt   #mapping from input matrix entries to triuA
-
-    if isnothing(AtoPAPt)
-        @views triuA.nzval[indices] .+= offset.*signs
-    else
-        @views triuA.nzval[AtoPAPt[indices]] .+= offset.*signs
-    end
-
-    return nothing
-
 end
 
 
@@ -393,14 +380,29 @@ end
 
 
 function QDLDL_factor!(
-        n,Ap,Ai,Ax,Lp,Li,Lx,
-        D,Dinv,Lnz,etree,bwork,iwork,fwork,
-        logicalFactor::Bool,Dsigns,
-        regularize_eps,regularize_delta,regularize_count
+        n,
+        Ap,
+        Ai,
+        Ax,
+        Lp,
+        Li,
+        Lx,
+        D,
+        Dinv,
+        Lnz,
+        etree,
+        bwork,
+        iwork,
+        fwork,
+        logicalFactor::Bool,
+        Dsigns,
+        regularize_eps,
+        regularize_delta,
+        regularize_count
 )
 
     positiveValuesInD  = 0
-    regularize_count[] = 0
+    regularize_count[1] = 0
 
     #partition working memory into pieces
     yMarkers        = bwork
@@ -430,7 +432,7 @@ function QDLDL_factor!(
         D[1]     = Ax[1]
         if(Dsigns !== nothing && Dsigns[1]*D[1] < regularize_eps)
             D[1] = regularize_delta * Dsigns[1]
-            regularize_count[] += 1
+            regularize_count[1] += 1
         end
 
         if(D[1] == 0.0) return -1 end
@@ -550,7 +552,7 @@ function QDLDL_factor!(
         #vector has been specified.
         if(Dsigns !== nothing && Dsigns[k]*D[k] < regularize_eps)
             D[k] = regularize_delta * Dsigns[k]
-            regularize_count[] += 1
+            regularize_count[1] += 1
         end
 
         #Maintain a count of the positive entries
@@ -606,14 +608,14 @@ end
 # internal permutation and inverse permutation
 # functions that require no memory allocations
 function permute!(x,b,p)
-  @inbounds for j = 1:length(x)
+  @inbounds for j = eachindex(x)
       x[j] = b[p[j]];
   end
   return x
 end
 
 function ipermute!(x,b,p)
- @inbounds for j = 1:length(x)
+ @inbounds for j = eachindex(x)
      x[p[j]] = b[j];
  end
  return x
@@ -723,5 +725,22 @@ function _permute_symmetric(
     return P
 end
 
+function _get_amd_ordering(A,amd_dense_scale)
+
+    # PJG: For interested readers - setting amd_dense_scale to 1.5 seems to work better
+    # for KKT systems in QP problems, but this ad hoc method can surely be improved
+
+    # computes a permutation for A using AMD default parameters explicit cast of the scaling 
+    # to Float64 here allows the scale parameter to be passed as some other float type for 
+    # consistency with the main API.
+
+    meta = Amd()
+    meta.control[AMD.AMD_DENSE] *= Float64(amd_dense_scale)   
+    p = amd(A,meta)
+    return p
+
+
+
+end
 
 end #end module
