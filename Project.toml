@@ -1,7 +1,7 @@
 name = "QDLDL"
 uuid = "bfc457fd-c171-5ab7-bd9e-d5dbfc242d63"
 authors = ["Paul Goulart <paul.goulart@eng.ox.ac.uk>"]
-version = "0.3.0"
+version = "0.4.0"
 
 
 [deps]
