@@ -49,7 +49,9 @@ struct QDLDLWorkspace{Tf<:AbstractFloat,Ti<:Integer}
     regularize_delta::Tf
 
     #number of regularized entries in D
-    regularize_count::Ref{Ti}
+    #length 1 vector instead of ref to avoid allocations
+    #while maintaining immutability
+    regularize_count::Vector{Ti}
 
 end
 
@@ -88,7 +90,7 @@ function QDLDLWorkspace(triuA::SparseMatrixCSC{Tf,Ti},
     positive_inertia = Ref{Ti}(-1)
 
     #number of regularized entries in D. None to start
-    regularize_count = Ref{Ti}(0)
+    regularize_count = zeros(Ti,1)
 
     QDLDLWorkspace(etree,Lnz,iwork,bwork,fwork,
                    Ln,Lp,Li,Lx,D,Dinv,positive_inertia,triuA,
@@ -199,7 +201,7 @@ function positive_inertia(F::QDLDLFactorisation)
 end
 
 function regularized_entries(F::QDLDLFactorisation)
-    F.workspace.regularize_count[]
+    F.workspace.regularize_count[1]
 end
 
 
@@ -378,14 +380,29 @@ end
 
 
 function QDLDL_factor!(
-        n,Ap,Ai,Ax,Lp,Li,Lx,
-        D,Dinv,Lnz,etree,bwork,iwork,fwork,
-        logicalFactor::Bool,Dsigns,
-        regularize_eps,regularize_delta,regularize_count
+        n,
+        Ap,
+        Ai,
+        Ax,
+        Lp,
+        Li,
+        Lx,
+        D,
+        Dinv,
+        Lnz,
+        etree,
+        bwork,
+        iwork,
+        fwork,
+        logicalFactor::Bool,
+        Dsigns,
+        regularize_eps,
+        regularize_delta,
+        regularize_count
 )
 
     positiveValuesInD  = 0
-    regularize_count[] = 0
+    regularize_count[1] = 0
 
     #partition working memory into pieces
     yMarkers        = bwork
@@ -415,7 +432,7 @@ function QDLDL_factor!(
         D[1]     = Ax[1]
         if(Dsigns !== nothing && Dsigns[1]*D[1] < regularize_eps)
             D[1] = regularize_delta * Dsigns[1]
-            regularize_count[] += 1
+            regularize_count[1] += 1
         end
 
         if(D[1] == 0.0) return -1 end
@@ -535,7 +552,7 @@ function QDLDL_factor!(
         #vector has been specified.
         if(Dsigns !== nothing && Dsigns[k]*D[k] < regularize_eps)
             D[k] = regularize_delta * Dsigns[k]
-            regularize_count[] += 1
+            regularize_count[1] += 1
         end
 
         #Maintain a count of the positive entries
