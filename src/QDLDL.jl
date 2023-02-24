@@ -214,7 +214,7 @@ function update_values!(
     triuA   = F.workspace.triuA     #post permutation internal data
     AtoPAPt = F.workspace.AtoPAPt   #mapping from input matrix entries to triuA
 
-    if isnothing(AtoPAPt)
+    if AtoPAPt === nothing
         @views triuA.nzval[indices] .= values
     else
         @views triuA.nzval[AtoPAPt[indices]] .= values
@@ -233,7 +233,7 @@ function scale_values!(
     triuA   = F.workspace.triuA     #post permutation internal data
     AtoPAPt = F.workspace.AtoPAPt   #mapping from input matrix entries to triuA
 
-    if isnothing(AtoPAPt)
+    if AtoPAPt === nothing
         @views triuA.nzval[indices] .*= scale
     else
         @views triuA.nzval[AtoPAPt[indices]] .*= scale
